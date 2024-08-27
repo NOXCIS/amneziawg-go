@@ -1,11 +1,11 @@
-FROM golang:latest as awg
+FROM golang:latest AS awg
 COPY . /awg
 WORKDIR /awg
 RUN go mod download && \
     go mod verify && \
     go build -ldflags '-linkmode external -extldflags "-fno-PIC -static"' -v -o /usr/bin
 
-FROM alpine:3.15 as awg-tools
+FROM alpine:3.15 AS awg-tools
 ARG AWGTOOLS_RELEASE="1.0.20231215"
 RUN apk --no-cache add linux-headers build-base git bash && \
     git clone https://github.com/NOXCIS/amneziawg-tools.git && \
