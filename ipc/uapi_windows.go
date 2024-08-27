@@ -8,7 +8,7 @@ package ipc
 import (
 	"net"
 
-	"github.com/amnezia-vpn/amneziawg-go/ipc/namedpipe"
+	"github.com/amnezia-vpn/amnezia-wg/ipc/namedpipe"
 	"golang.org/x/sys/windows"
 )
 
@@ -62,7 +62,7 @@ func init() {
 func UAPIListen(name string) (net.Listener, error) {
 	listener, err := (&namedpipe.ListenConfig{
 		SecurityDescriptor: UAPISecurityDescriptor,
-	}).Listen(`\\.\pipe\ProtectedPrefix\Administrators\AmneziaWG\` + name)
+	}).Listen(`\\.\pipe\ProtectedPrefix\Administrators\WireGuard\` + name)
 	if err != nil {
 		return nil, err
 	}

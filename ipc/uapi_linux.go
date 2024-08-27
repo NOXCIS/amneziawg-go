@@ -9,7 +9,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/amnezia-vpn/amneziawg-go/rwcancel"
+	"github.com/amnezia-vpn/amnezia-wg/rwcancel"
 	"golang.org/x/sys/unix"
 )
 

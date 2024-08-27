@@ -12,25 +12,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amnezia-wg/conn"
 )
 
 type Peer struct {
 	isRunning         atomic.Bool
+	sync.RWMutex      // Mostly protects endpoint, but is generally taken whenever we modify peer
 	keypairs          Keypairs
 	handshake         Handshake
 	device            *Device
+	endpoint          conn.Endpoint
 	stopping          sync.WaitGroup // routines pending stop
 	txBytes           atomic.Uint64  // bytes send to peer (endpoint)
 	rxBytes           atomic.Uint64  // bytes received from peer
 	lastHandshakeNano atomic.Int64   // nano seconds since epoch
 
-	endpoint struct {
-		sync.Mutex
-		val            conn.Endpoint
-		clearSrcOnTx   bool // signal to val.ClearSrc() prior to next packet transmission
-		disableRoaming bool
-	}
+	disableRoaming bool
 
 	timers struct {
 		retransmitHandshake     *Timer
@@ -77,6 +74,8 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 	// create peer
 	peer := new(Peer)
+	peer.Lock()
+	defer peer.Unlock()
 
 	peer.cookieGenerator.Init(pk)
 	peer.device = device
@@ -98,11 +97,7 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	handshake.mutex.Unlock()
 
 	// reset endpoint
-	peer.endpoint.Lock()
-	peer.endpoint.val = nil
-	peer.endpoint.disableRoaming = false
-	peer.endpoint.clearSrcOnTx = false
-	peer.endpoint.Unlock()
+	peer.endpoint = nil
 
 	// init timers
 	peer.timersInit()
@@ -121,19 +116,14 @@ func (peer *Peer) SendBuffers(buffers [][]byte) error {
 		return nil
 	}
 
-	peer.endpoint.Lock()
-	endpoint := peer.endpoint.val
-	if endpoint == nil {
-		peer.endpoint.Unlock()
+	peer.RLock()
+	defer peer.RUnlock()
+
+	if peer.endpoint == nil {
 		return errors.New("no known endpoint for peer")
 	}
-	if peer.endpoint.clearSrcOnTx {
-		endpoint.ClearSrc()
-		peer.endpoint.clearSrcOnTx = false
-	}
-	peer.endpoint.Unlock()
 
-	err := peer.device.net.bind.Send(buffers, endpoint)
+	err := peer.device.net.bind.Send(buffers, peer.endpoint)
 	if err == nil {
 		var totalLen uint64
 		for _, b := range buffers {
@@ -277,20 +267,10 @@ func (peer *Peer) Stop() {
 }
 
 func (peer *Peer) SetEndpointFromPacket(endpoint conn.Endpoint) {
-	peer.endpoint.Lock()
-	defer peer.endpoint.Unlock()
-	if peer.endpoint.disableRoaming {
+	if peer.disableRoaming {
 		return
 	}
-	peer.endpoint.clearSrcOnTx = false
-	peer.endpoint.val = endpoint
-}
-
-func (peer *Peer) markEndpointSrcForClearing() {
-	peer.endpoint.Lock()
-	defer peer.endpoint.Unlock()
-	if peer.endpoint.val == nil {
-		return
-	}
-	peer.endpoint.clearSrcOnTx = true
+	peer.Lock()
+	peer.endpoint = endpoint
+	peer.Unlock()
 }

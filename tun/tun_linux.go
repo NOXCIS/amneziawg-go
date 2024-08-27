@@ -17,8 +17,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/rwcancel"
+	"github.com/amnezia-vpn/amnezia-wg/conn"
+	"github.com/amnezia-vpn/amnezia-wg/rwcancel"
 	"golang.org/x/sys/unix"
 )
 
@@ -38,7 +38,6 @@ type NativeTun struct {
 	statusListenersShutdown chan struct{}
 	batchSize               int
 	vnetHdr                 bool
-	udpGSO                  bool
 
 	closeOnce sync.Once
 
@@ -49,10 +48,9 @@ type NativeTun struct {
 	readOpMu sync.Mutex                    // readOpMu guards readBuff
 	readBuff [virtioNetHdrLen + 65535]byte // if vnetHdr every read() is prefixed by virtioNetHdr
 
-	writeOpMu   sync.Mutex // writeOpMu guards toWrite, tcpGROTable
-	toWrite     []int
-	tcpGROTable *tcpGROTable
-	udpGROTable *udpGROTable
+	writeOpMu                  sync.Mutex // writeOpMu guards toWrite, tcp4GROTable, tcp6GROTable
+	toWrite                    []int
+	tcp4GROTable, tcp6GROTable *tcpGROTable
 }
 
 func (tun *NativeTun) File() *os.File {
@@ -335,8 +333,8 @@ func (tun *NativeTun) nameSlow() (string, error) {
 func (tun *NativeTun) Write(bufs [][]byte, offset int) (int, error) {
 	tun.writeOpMu.Lock()
 	defer func() {
-		tun.tcpGROTable.reset()
-		tun.udpGROTable.reset()
+		tun.tcp4GROTable.reset()
+		tun.tcp6GROTable.reset()
 		tun.writeOpMu.Unlock()
 	}()
 	var (
@@ -345,7 +343,7 @@ func (tun *NativeTun) Write(bufs [][]byte, offset int) (int, error) {
 	)
 	tun.toWrite = tun.toWrite[:0]
 	if tun.vnetHdr {
-		err := handleGRO(bufs, offset, tun.tcpGROTable, tun.udpGROTable, tun.udpGSO, &tun.toWrite)
+		err := handleGRO(bufs, offset, tun.tcp4GROTable, tun.tcp6GROTable, &tun.toWrite)
 		if err != nil {
 			return 0, err
 		}
@@ -396,42 +394,37 @@ func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, e
 		sizes[0] = n
 		return 1, nil
 	}
-	if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV4 && hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV6 && hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_UDP_L4 {
+	if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV4 && hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV6 {
 		return 0, fmt.Errorf("unsupported virtio GSO type: %d", hdr.gsoType)
 	}
 
 	ipVersion := in[0] >> 4
 	switch ipVersion {
 	case 4:
-		if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV4 && hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_UDP_L4 {
+		if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV4 {
 			return 0, fmt.Errorf("ip header version: %d, GSO type: %d", ipVersion, hdr.gsoType)
 		}
 	case 6:
-		if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV6 && hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_UDP_L4 {
+		if hdr.gsoType != unix.VIRTIO_NET_HDR_GSO_TCPV6 {
 			return 0, fmt.Errorf("ip header version: %d, GSO type: %d", ipVersion, hdr.gsoType)
 		}
 	default:
 		return 0, fmt.Errorf("invalid ip header version: %d", ipVersion)
 	}
 
+	if len(in) <= int(hdr.csumStart+12) {
+		return 0, errors.New("packet is too short")
+	}
 	// Don't trust hdr.hdrLen from the kernel as it can be equal to the length
 	// of the entire first packet when the kernel is handling it as part of a
-	// FORWARD path. Instead, parse the transport header length and add it onto
+	// FORWARD path. Instead, parse the TCP header length and add it onto
 	// csumStart, which is synonymous for IP header length.
-	if hdr.gsoType == unix.VIRTIO_NET_HDR_GSO_UDP_L4 {
-		hdr.hdrLen = hdr.csumStart + 8
-	} else {
-		if len(in) <= int(hdr.csumStart+12) {
-			return 0, errors.New("packet is too short")
-		}
-
-		tcpHLen := uint16(in[hdr.csumStart+12] >> 4 * 4)
-		if tcpHLen < 20 || tcpHLen > 60 {
-			// A TCP header must be between 20 and 60 bytes in length.
-			return 0, fmt.Errorf("tcp header len is invalid: %d", tcpHLen)
-		}
-		hdr.hdrLen = hdr.csumStart + tcpHLen
+	tcpHLen := uint16(in[hdr.csumStart+12] >> 4 * 4)
+	if tcpHLen < 20 || tcpHLen > 60 {
+		// A TCP header must be between 20 and 60 bytes in length.
+		return 0, fmt.Errorf("tcp header len is invalid: %d", tcpHLen)
 	}
+	hdr.hdrLen = hdr.csumStart + tcpHLen
 
 	if len(in) < int(hdr.hdrLen) {
 		return 0, fmt.Errorf("length of packet (%d) < virtioNetHdr.hdrLen (%d)", len(in), hdr.hdrLen)
@@ -445,7 +438,7 @@ func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, e
 		return 0, fmt.Errorf("end of checksum offset (%d) exceeds packet length (%d)", cSumAt+1, len(in))
 	}
 
-	return gsoSplit(in, hdr, bufs, sizes, offset, ipVersion == 6)
+	return tcpTSO(in, hdr, bufs, sizes, offset)
 }
 
 func (tun *NativeTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
@@ -504,8 +497,7 @@ func (tun *NativeTun) BatchSize() int {
 
 const (
 	// TODO: support TSO with ECN bits
-	tunTCPOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
-	tunUDPOffloads = unix.TUN_F_USO4 | unix.TUN_F_USO6
+	tunOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
 )
 
 func (tun *NativeTun) initFromFlags(name string) error {
@@ -527,17 +519,12 @@ func (tun *NativeTun) initFromFlags(name string) error {
 		}
 		got := ifr.Uint16()
 		if got&unix.IFF_VNET_HDR != 0 {
-			// tunTCPOffloads were added in Linux v2.6. We require their support
-			// if IFF_VNET_HDR is set.
-			err = unix.IoctlSetInt(int(fd), unix.TUNSETOFFLOAD, tunTCPOffloads)
+			err = unix.IoctlSetInt(int(fd), unix.TUNSETOFFLOAD, tunOffloads)
 			if err != nil {
 				return
 			}
 			tun.vnetHdr = true
 			tun.batchSize = conn.IdealBatchSize
-			// tunUDPOffloads were added in Linux v6.2. We do not return an
-			// error if they are unsupported at runtime.
-			tun.udpGSO = unix.IoctlSetInt(int(fd), unix.TUNSETOFFLOAD, tunTCPOffloads|tunUDPOffloads) == nil
 		} else {
 			tun.batchSize = 1
 		}
@@ -588,8 +575,8 @@ func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 		events:                  make(chan Event, 5),
 		errors:                  make(chan error, 5),
 		statusListenersShutdown: make(chan struct{}),
-		tcpGROTable:             newTCPGROTable(),
-		udpGROTable:             newUDPGROTable(),
+		tcp4GROTable:            newTCPGROTable(),
+		tcp6GROTable:            newTCPGROTable(),
 		toWrite:                 make([]int, 0, conn.IdealBatchSize),
 	}
 
@@ -641,12 +628,12 @@ func CreateUnmonitoredTUNFromFD(fd int) (Device, string, error) {
 	}
 	file := os.NewFile(uintptr(fd), "/dev/tun")
 	tun := &NativeTun{
-		tunFile:     file,
-		events:      make(chan Event, 5),
-		errors:      make(chan error, 5),
-		tcpGROTable: newTCPGROTable(),
-		udpGROTable: newUDPGROTable(),
-		toWrite:     make([]int, 0, conn.IdealBatchSize),
+		tunFile:      file,
+		events:       make(chan Event, 5),
+		errors:       make(chan error, 5),
+		tcp4GROTable: newTCPGROTable(),
+		tcp6GROTable: newTCPGROTable(),
+		toWrite:      make([]int, 0, conn.IdealBatchSize),
 	}
 	name, err := tun.Name()
 	if err != nil {

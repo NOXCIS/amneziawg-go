@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amnezia-wg/conn"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -145,7 +145,7 @@ func (device *Device) RoutineReceiveIncoming(
 					junkSize := msgTypeToJunkSize[assumedMsgType]
 					// transport size can align with other header types;
 					// making sure we have the right msgType
-					msgType = binary.LittleEndian.Uint32(packet[junkSize : junkSize+4])
+					msgType = binary.LittleEndian.Uint32(packet[junkSize:junkSize+4])
 					if msgType == assumedMsgType {
 						packet = packet[junkSize:]
 					} else {
@@ -476,10 +476,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			return
 		}
 		elemsContainer.Lock()
-		validTailPacket := -1
-		dataPacketReceived := false
-		rxBytesLen := uint64(0)
-		for i, elem := range elemsContainer.elems {
+		for _, elem := range elemsContainer.elems {
 			if elem.packet == nil {
 				// decryption failed
 				continue
@@ -489,19 +486,21 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				continue
 			}
 
-			validTailPacket = i
+			peer.SetEndpointFromPacket(elem.endpoint)
 			if peer.ReceivedWithKeypair(elem.keypair) {
-				peer.SetEndpointFromPacket(elem.endpoint)
 				peer.timersHandshakeComplete()
 				peer.SendStagedPackets()
 			}
-			rxBytesLen += uint64(len(elem.packet) + MinMessageSize)
+			peer.keepKeyFreshReceiving()
+			peer.timersAnyAuthenticatedPacketTraversal()
+			peer.timersAnyAuthenticatedPacketReceived()
+			peer.rxBytes.Add(uint64(len(elem.packet) + MinMessageSize))
 
 			if len(elem.packet) == 0 {
 				device.log.Verbosef("%v - Receiving keepalive packet", peer)
 				continue
 			}
-			dataPacketReceived = true
+			peer.timersDataReceived()
 
 			switch elem.packet[0] >> 4 {
 			case 4:
@@ -549,17 +548,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				bufs,
 				elem.buffer[:MessageTransportOffsetContent+len(elem.packet)],
 			)
-		}
-
-		peer.rxBytes.Add(rxBytesLen)
-		if validTailPacket >= 0 {
-			peer.SetEndpointFromPacket(elemsContainer.elems[validTailPacket].endpoint)
-			peer.keepKeyFreshReceiving()
-			peer.timersAnyAuthenticatedPacketTraversal()
-			peer.timersAnyAuthenticatedPacketReceived()
-		}
-		if dataPacketReceived {
-			peer.timersDataReceived()
 		}
 		if len(bufs) > 0 {
 			_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)

@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/ipc"
-	"github.com/amnezia-vpn/amneziawg-go/ratelimiter"
-	"github.com/amnezia-vpn/amneziawg-go/rwcancel"
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/amnezia-vpn/amnezia-wg/conn"
+	"github.com/amnezia-vpn/amnezia-wg/ipc"
+	"github.com/amnezia-vpn/amnezia-wg/ratelimiter"
+	"github.com/amnezia-vpn/amnezia-wg/rwcancel"
+	"github.com/amnezia-vpn/amnezia-wg/tun"
 	"github.com/tevino/abool/v2"
 )
 
@@ -388,10 +388,10 @@ func (device *Device) RemoveAllPeers() {
 }
 
 func (device *Device) Close() {
-	device.state.Lock()
-	defer device.state.Unlock()
 	device.ipcMutex.Lock()
 	defer device.ipcMutex.Unlock()
+	device.state.Lock()
+	defer device.state.Unlock()
 	if device.isClosed() {
 		return
 	}
@@ -414,8 +414,6 @@ func (device *Device) Close() {
 	device.state.stopping.Wait()
 
 	device.rate.limiter.Close()
-
-	device.resetProtocol()
 
 	device.log.Verbosef("Device closed")
 	close(device.closed)
@@ -483,7 +481,11 @@ func (device *Device) BindSetMark(mark uint32) error {
 	// clear cached source addresses
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
-		peer.markEndpointSrcForClearing()
+		peer.Lock()
+		defer peer.Unlock()
+		if peer.endpoint != nil {
+			peer.endpoint.ClearSrc()
+		}
 	}
 	device.peers.RUnlock()
 
@@ -533,7 +535,11 @@ func (device *Device) BindUpdate() error {
 	// clear cached source addresses
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
-		peer.markEndpointSrcForClearing()
+		peer.Lock()
+		defer peer.Unlock()
+		if peer.endpoint != nil {
+			peer.endpoint.ClearSrc()
+		}
 	}
 	device.peers.RUnlock()
 
@@ -558,14 +564,6 @@ func (device *Device) BindClose() error {
 }
 func (device *Device) isAdvancedSecurityOn() bool {
 	return device.isASecOn.IsSet()
-}
-
-func (device *Device) resetProtocol() {
-	// restore default message type values
-	MessageInitiationType = 1
-	MessageResponseType = 2
-	MessageCookieReplyType = 3
-	MessageTransportType = 4
 }
 
 func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {

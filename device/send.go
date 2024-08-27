@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/amnezia-vpn/amnezia-wg/conn"
+	"github.com/amnezia-vpn/amnezia-wg/tun"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -137,13 +137,10 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 			return err
 		}
 
-		if len(junks) > 0 {
-			err = peer.SendBuffers(junks)
-
-			if err != nil {
-				peer.device.log.Errorf("%v - Failed to send junk packets: %v", peer, err)
-				return err
-			}
+		err = peer.SendBuffers(junks)
+		if err != nil {
+			peer.device.log.Errorf("%v - Failed to send junk packets: %v", peer, err)
+			return err
 		}
 
 		peer.device.aSecMux.RLock()
