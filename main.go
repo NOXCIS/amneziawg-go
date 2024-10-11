@@ -37,6 +37,7 @@ func printUsage() {
 }
 
 func warning() {
+	// Add OS-specific warnings or messages if needed.
 	switch runtime.GOOS {
 	case "linux", "freebsd", "openbsd":
 		if os.Getenv(ENV_WG_PROCESS_FOREGROUND) == "1" {
@@ -64,6 +65,10 @@ func main() {
 	}
 
 	warning()
+
+	// Detect and print the current architecture and OS
+	fmt.Printf("Building for architecture: %s\n", runtime.GOARCH)
+	fmt.Printf("Running on operating system: %s\n", runtime.GOOS)
 
 	var foreground bool
 	var interfaceName string
@@ -95,8 +100,7 @@ func main() {
 		foreground = os.Getenv(ENV_WG_PROCESS_FOREGROUND) == "1"
 	}
 
-	// get log level (default: info)
-
+	// Get log level (default: error)
 	logLevel := func() int {
 		switch os.Getenv("LOG_LEVEL") {
 		case "verbose", "debug":
@@ -109,16 +113,14 @@ func main() {
 		return device.LogLevelError
 	}()
 
-	// open TUN device (or use supplied fd)
-
+	// Open TUN device (or use supplied fd)
 	tdev, err := func() (tun.Device, error) {
 		tunFdStr := os.Getenv(ENV_WG_TUN_FD)
 		if tunFdStr == "" {
 			return tun.CreateTUN(interfaceName, device.DefaultMTU)
 		}
 
-		// construct tun device from supplied fd
-
+		// Construct TUN device from supplied fd
 		fd, err := strconv.ParseUint(tunFdStr, 10, 32)
 		if err != nil {
 			return nil, err
@@ -152,16 +154,14 @@ func main() {
 		os.Exit(ExitSetupFailed)
 	}
 
-	// open UAPI file (or use supplied fd)
-
+	// Open UAPI file (or use supplied fd)
 	fileUAPI, err := func() (*os.File, error) {
 		uapiFdStr := os.Getenv(ENV_WG_UAPI_FD)
 		if uapiFdStr == "" {
 			return ipc.UAPIOpen(interfaceName)
 		}
 
-		// use supplied fd
-
+		// Use supplied fd
 		fd, err := strconv.ParseUint(uapiFdStr, 10, 32)
 		if err != nil {
 			return nil, err
@@ -174,8 +174,8 @@ func main() {
 		os.Exit(ExitSetupFailed)
 		return
 	}
-	// daemonize the process
 
+	// Daemonize the process
 	if !foreground {
 		env := os.Environ()
 		env = append(env, fmt.Sprintf("%s=3", ENV_WG_TUN_FD))
@@ -231,7 +231,7 @@ func main() {
 
 	uapi, err := ipc.UAPIListen(interfaceName, fileUAPI)
 	if err != nil {
-		logger.Errorf("Failed to listen on uapi socket: %v", err)
+		logger.Errorf("Failed to listen on UAPI socket: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -248,8 +248,7 @@ func main() {
 
 	logger.Verbosef("UAPI listener started")
 
-	// wait for program to terminate
-
+	// Wait for program to terminate
 	signal.Notify(term, unix.SIGTERM)
 	signal.Notify(term, os.Interrupt)
 
@@ -259,8 +258,7 @@ func main() {
 	case <-device.Wait():
 	}
 
-	// clean up
-
+	// Clean up
 	uapi.Close()
 	device.Close()
 
