@@ -15,7 +15,4 @@ RUN apk --no-cache add linux-headers build-base git bash && \
     make -e LDFLAGS=-static && \
     make install
 
-FROM alpine:3.15
-RUN apk --no-cache add iproute2 bash
-COPY --from=awg /usr/bin/amnezia-wg /usr/bin/wireguard-go
-COPY --from=awg-tools /usr/bin/wg /usr/bin/wg-quick /usr/bin/
+
