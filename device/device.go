@@ -70,11 +70,11 @@ type Device struct {
 	cookieChecker CookieChecker
 
 	pool struct {
-		inboundElementsContainer  *WaitPool
-		outboundElementsContainer *WaitPool
-		messageBuffers            *WaitPool
-		inboundElements           *WaitPool
-		outboundElements          *WaitPool
+		outboundElementsSlice *WaitPool
+		inboundElementsSlice  *WaitPool
+		messageBuffers        *WaitPool
+		inboundElements       *WaitPool
+		outboundElements      *WaitPool
 	}
 
 	queue struct {
@@ -98,7 +98,6 @@ type Device struct {
 }
 
 type aSecCfgType struct {
-	isSet                      bool
 	junkPacketCount            int
 	junkPacketMinSize          int
 	junkPacketMaxSize          int
@@ -546,7 +545,7 @@ func (device *Device) BindUpdate() error {
 	// start receiving routines
 	device.net.stopping.Add(len(recvFns))
 	device.queue.decryption.wg.Add(len(recvFns)) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
-	device.queue.handshake.wg.Add(len(recvFns))  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
+	device.queue.handshake.wg.Add(len(recvFns)) // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
 	batchSize := netc.bind.BatchSize()
 	for _, fn := range recvFns {
 		go device.RoutineReceiveIncoming(batchSize, fn)
@@ -566,17 +565,25 @@ func (device *Device) isAdvancedSecurityOn() bool {
 	return device.isASecOn.IsSet()
 }
 
-func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
-
-	if !tempASecCfg.isSet {
+func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {	
+	
+	if tempASecCfg.junkPacketCount == 0 &&
+		tempASecCfg.junkPacketMaxSize == 0 &&
+		tempASecCfg.junkPacketMinSize == 0 &&
+		tempASecCfg.initPacketJunkSize == 0 &&
+		tempASecCfg.responsePacketJunkSize == 0 &&
+		tempASecCfg.initPacketMagicHeader == 0 &&
+		tempASecCfg.responsePacketMagicHeader == 0 &&
+		tempASecCfg.underloadPacketMagicHeader == 0 &&
+		tempASecCfg.transportPacketMagicHeader == 0 {
 		return err
 	}
-
+	
 	isASecOn := false
 	device.aSecMux.Lock()
 	if tempASecCfg.junkPacketCount < 0 {
 		err = ipcErrorf(
-			ipc.IpcErrorInvalid,
+			ipc.IpcErrorInvalid, 
 			"JunkPacketCount should be non negative",
 		)
 	}
@@ -584,24 +591,24 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 	if tempASecCfg.junkPacketCount != 0 {
 		isASecOn = true
 	}
-
+	
 	device.aSecCfg.junkPacketMinSize = tempASecCfg.junkPacketMinSize
 	if tempASecCfg.junkPacketMinSize != 0 {
 		isASecOn = true
 	}
 
-	if device.aSecCfg.junkPacketCount > 0 &&
+	if device.aSecCfg.junkPacketCount > 0 && 
 		tempASecCfg.junkPacketMaxSize == tempASecCfg.junkPacketMinSize {
-
+			
 		tempASecCfg.junkPacketMaxSize++ // to make rand gen work
 	}
 
-	if tempASecCfg.junkPacketMaxSize >= MaxSegmentSize {
+	if tempASecCfg.junkPacketMaxSize >= MaxSegmentSize{
 		device.aSecCfg.junkPacketMinSize = 0
 		device.aSecCfg.junkPacketMaxSize = 1
 		if err != nil {
 			err = ipcErrorf(
-				ipc.IpcErrorInvalid,
+				ipc.IpcErrorInvalid, 
 				"JunkPacketMaxSize: %d; should be smaller than maxSegmentSize: %d; %w",
 				tempASecCfg.junkPacketMaxSize,
 				MaxSegmentSize,
@@ -609,7 +616,7 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 			)
 		} else {
 			err = ipcErrorf(
-				ipc.IpcErrorInvalid,
+				ipc.IpcErrorInvalid, 
 				"JunkPacketMaxSize: %d; should be smaller than maxSegmentSize: %d",
 				tempASecCfg.junkPacketMaxSize,
 				MaxSegmentSize,
@@ -618,18 +625,18 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 	} else if tempASecCfg.junkPacketMaxSize < tempASecCfg.junkPacketMinSize {
 		if err != nil {
 			err = ipcErrorf(
-				ipc.IpcErrorInvalid,
+				ipc.IpcErrorInvalid, 
 				"maxSize: %d; should be greater than minSize: %d; %w",
 				tempASecCfg.junkPacketMaxSize,
-				tempASecCfg.junkPacketMinSize,
+				tempASecCfg.junkPacketMinSize, 
 				err,
 			)
 		} else {
 			err = ipcErrorf(
-				ipc.IpcErrorInvalid,
+				ipc.IpcErrorInvalid, 
 				"maxSize: %d; should be greater than minSize: %d",
 				tempASecCfg.junkPacketMaxSize,
-				tempASecCfg.junkPacketMinSize,
+				tempASecCfg.junkPacketMinSize, 
 			)
 		}
 	} else {
@@ -657,10 +664,10 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 				MaxSegmentSize,
 			)
 		}
-	} else {
+	} else {	
 		device.aSecCfg.initPacketJunkSize = tempASecCfg.initPacketJunkSize
 	}
-
+	
 	if tempASecCfg.initPacketJunkSize != 0 {
 		isASecOn = true
 	}
@@ -682,7 +689,7 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 				MaxSegmentSize,
 			)
 		}
-	} else {
+	} else {	
 		device.aSecCfg.responsePacketJunkSize = tempASecCfg.responsePacketJunkSize
 	}
 
@@ -699,7 +706,7 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 		device.log.Verbosef("UAPI: Using default init type")
 		MessageInitiationType = 1
 	}
-
+	
 	if tempASecCfg.responsePacketMagicHeader > 4 {
 		isASecOn = true
 		device.log.Verbosef("UAPI: Updating response_packet_magic_header")
@@ -709,7 +716,7 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 		device.log.Verbosef("UAPI: Using default response type")
 		MessageResponseType = 2
 	}
-
+	
 	if tempASecCfg.underloadPacketMagicHeader > 4 {
 		isASecOn = true
 		device.log.Verbosef("UAPI: Updating underload_packet_magic_header")
@@ -780,14 +787,14 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 				newResponseSize,
 			)
 		}
-	} else {
+	} else {		
 		packetSizeToMsgType = map[int]uint32{
-			newInitSize:            MessageInitiationType,
-			newResponseSize:        MessageResponseType,
+			newInitSize:   MessageInitiationType,
+			newResponseSize: MessageResponseType,
 			MessageCookieReplySize: MessageCookieReplyType,
 			MessageTransportSize:   MessageTransportType,
 		}
-
+	
 		msgTypeToJunkSize = map[uint32]int{
 			MessageInitiationType:  device.aSecCfg.initPacketJunkSize,
 			MessageResponseType:    device.aSecCfg.responsePacketJunkSize,
@@ -798,6 +805,6 @@ func (device *Device) handlePostConfig(tempASecCfg *aSecCfgType) (err error) {
 
 	device.isASecOn.SetTo(isASecOn)
 	device.aSecMux.Unlock()
-
+	
 	return err
 }

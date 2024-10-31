@@ -105,8 +105,6 @@ func setSrcControl(control *[]byte, ep *StdNetEndpoint) {
 	*control = append(*control, ep.src...)
 }
 
-// stickyControlSize returns the recommended buffer size for pooling sticky
-// offloading control data.
-var stickyControlSize = unix.CmsgSpace(unix.SizeofInet6Pktinfo)
+var srcControlSize = unix.CmsgSpace(unix.SizeofInet6Pktinfo)
 
 const StdNetSupportsStickySockets = true
